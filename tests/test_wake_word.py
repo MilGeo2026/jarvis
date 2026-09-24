@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
@@ -35,7 +35,22 @@ def test_wake_word_handles_microphone_error() -> None:
     microphone.record_utterance.side_effect = MicrophoneError("kein Mikrofon")
     stt = MagicMock()
     detector = WakeWordDetector("jarvis", stt, microphone, enabled=True)
-    assert detector.listen_once() is False
+    with patch("voice.wake_word.time.sleep") as mock_sleep:
+        assert detector.listen_once() is False
+    # Backoff verhindert eine CPU-fressende Endlosschleife bei dauerhaftem Mikrofon-Fehler.
+    mock_sleep.assert_called_once()
+
+
+def test_wake_word_microphone_error_backoff_duration() -> None:
+    from voice.wake_word import MICROPHONE_ERROR_BACKOFF_S
+
+    microphone = MagicMock()
+    microphone.record_utterance.side_effect = MicrophoneError("kein Mikrofon")
+    stt = MagicMock()
+    detector = WakeWordDetector("jarvis", stt, microphone, enabled=True)
+    with patch("voice.wake_word.time.sleep") as mock_sleep:
+        detector.listen_once()
+    mock_sleep.assert_called_once_with(MICROPHONE_ERROR_BACKOFF_S)
 
 
 def test_wake_word_handles_too_short_recording() -> None:
