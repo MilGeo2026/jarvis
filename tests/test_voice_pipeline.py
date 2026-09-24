@@ -68,7 +68,7 @@ def test_run_forever_calls_on_wake_detected_when_wake_word_triggers() -> None:
         on_user_text=lambda text: "Natuerlich."
     )
     pipeline._on_wake_detected = on_wake
-    wake_word.listen_once.side_effect = [True]
+    wake_word.listen_for_activation.side_effect = [(True, "")]
 
     call_count = {"n": 0}
 
@@ -83,3 +83,26 @@ def test_run_forever_calls_on_wake_detected_when_wake_word_triggers() -> None:
     pipeline.run_forever()
 
     on_wake.assert_called_once()
+
+
+def test_run_forever_uses_command_said_in_same_breath_as_wake_word() -> None:
+    """"Jarvis, wie spaet ist es?" in einem Atemzug darf keine zweite, leere
+    Aufnahme ausloesen (frueherer Bug: die Frage ging dabei verloren)."""
+    pipeline, microphone, stt, tts, wake_word, state_manager, activity_bus, _ = make_pipeline()
+    wake_word.listen_for_activation.side_effect = [(True, "wie spaet ist es?")]
+
+    received_texts = []
+
+    def stop_after_one(text: str) -> str:
+        received_texts.append(text)
+        pipeline.stop()
+        return "Es ist 14 Uhr."
+
+    pipeline._on_user_text = stop_after_one
+
+    pipeline.run_forever()
+
+    assert received_texts == ["wie spaet ist es?"]
+    microphone.record_utterance.assert_not_called()
+    assert activity_bus.value == "Es ist 14 Uhr."
+    assert state_manager.state == AssistantState.STANDBY

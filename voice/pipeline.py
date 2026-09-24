@@ -63,12 +63,22 @@ class VoicePipeline:
         while self._running:
             if self._wake_word.enabled:
                 logger.info("Warte auf Aktivierungswort")
-                if not self._wake_word.listen_once():
+                detected, immediate_command = self._wake_word.listen_for_activation()
+                if not detected:
                     continue
                 logger.info("Aktivierungswort erkannt")
                 if self._on_wake_detected is not None:
                     self._on_wake_detected()
-            self.listen_and_respond_once()
+                if immediate_command:
+                    # Befehl wurde im selben Atemzug wie das Aktivierungswort gesagt
+                    # (z. B. "Jarvis, wie spaet ist es?") - nicht verwerfen und erneut
+                    # aufnehmen, sondern direkt weiterverarbeiten.
+                    logger.info("Befehl direkt erkannt: %s", immediate_command)
+                    self._process_text(immediate_command)
+                else:
+                    self.listen_and_respond_once()
+            else:
+                self.listen_and_respond_once()
             if not self._wake_word.enabled:
                 break
 
@@ -98,6 +108,10 @@ class VoicePipeline:
         finally:
             self._audio_level.publish(0.0)
 
+        return self._process_text(text)
+
+    def _process_text(self, text: str) -> str:
+        """Schickt erkannten Text an die KI und spricht die Antwort. Setzt THINKING/SPEAKING/STANDBY."""
         logger.info("Benutzer: %s", text)
         self._activity.publish(text)
         self._state.set(AssistantState.THINKING)

@@ -59,3 +59,24 @@ def test_wake_word_handles_too_short_recording() -> None:
     stt = MagicMock()
     detector = WakeWordDetector("jarvis", stt, microphone, enabled=True)
     assert detector.listen_once() is False
+
+
+def test_listen_for_activation_extracts_command_said_in_same_breath() -> None:
+    detector = _make_detector("Jarvis, wie spaet ist es?")
+    detected, remainder = detector.listen_for_activation()
+    assert detected is True
+    assert remainder == "wie spaet ist es"
+
+
+def test_listen_for_activation_without_trailing_command() -> None:
+    detector = _make_detector("Jarvis")
+    detected, remainder = detector.listen_for_activation()
+    assert detected is True
+    assert remainder == ""
+
+
+def test_listen_for_activation_not_detected_returns_empty_remainder() -> None:
+    detector = _make_detector("Wie ist das Wetter heute?")
+    detected, remainder = detector.listen_for_activation()
+    assert detected is False
+    assert remainder == ""
