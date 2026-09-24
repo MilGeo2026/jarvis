@@ -1,0 +1,15 @@
+anthropic>=0.40.0
+python-dotenv>=1.0.1
+faster-whisper>=1.0.3
+sounddevice>=0.4.7
+soundfile>=0.12.1
+numpy>=1.26.4
+pyttsx3>=2.90
+plyer>=2.1.0
+requests>=2.32.3
+PySide6>=6.7.0
+psutil>=6.0.0
+
+pytest>=8.3.0
+pytest-mock>=3.14.0
+pytest-qt>=4.4.0

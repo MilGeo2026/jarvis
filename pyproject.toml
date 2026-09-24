@@ -1,0 +1,9 @@
+[project]
+name = "jarvis"
+version = "0.1.0"
+description = "Persoenlicher Sprachassistent JARVIS auf Basis von Claude"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+qt_api = "pyside6"
