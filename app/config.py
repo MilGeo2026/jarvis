@@ -40,6 +40,13 @@ class Settings:
 
     log_level: str
 
+    window_mode: str
+    always_on_top: bool
+    hotkey_toggle: str
+    sound_enabled: bool
+    boot_sequence_enabled: bool
+    theme_path: str
+
     @classmethod
     def load(cls, env_file: str | Path | None = ".env") -> "Settings":
         if load_dotenv is not None and env_file is not None and Path(env_file).exists():
@@ -65,6 +72,12 @@ class Settings:
         if log_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise ConfigError(f"LOG_LEVEL ist ungueltig: {log_level!r}")
 
+        window_mode = os.environ.get("WINDOW_MODE", "borderless").strip().lower()
+        if window_mode not in {"normal", "borderless", "fullscreen", "overlay"}:
+            raise ConfigError(
+                f"WINDOW_MODE muss 'normal', 'borderless', 'fullscreen' oder 'overlay' sein, war: {window_mode!r}"
+            )
+
         return cls(
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", "").strip(),
             anthropic_model=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5").strip(),
@@ -79,4 +92,10 @@ class Settings:
             wake_word_enabled=_bool(os.environ.get("WAKE_WORD_ENABLED", "true")),
             wake_word=os.environ.get("WAKE_WORD", "jarvis").strip().lower(),
             log_level=log_level,
+            window_mode=window_mode,
+            always_on_top=_bool(os.environ.get("ALWAYS_ON_TOP", "false")),
+            hotkey_toggle=os.environ.get("HOTKEY_TOGGLE", "<ctrl>+<space>").strip(),
+            sound_enabled=_bool(os.environ.get("SOUND_ENABLED", "true")),
+            boot_sequence_enabled=_bool(os.environ.get("BOOT_SEQUENCE_ENABLED", "true")),
+            theme_path=os.environ.get("THEME_PATH", "config/theme.json").strip(),
         )

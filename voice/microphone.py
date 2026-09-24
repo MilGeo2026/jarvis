@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Callable, Optional
 
 import numpy as np
 
@@ -12,6 +13,8 @@ SILENCE_THRESHOLD = 0.01
 SILENCE_DURATION_S = 1.2
 MAX_RECORDING_S = 15
 MIN_RECORDING_S = 0.4
+# Referenzwert, auf den die RMS-Lautstaerke fuer die Visualisierung normalisiert wird (0..1).
+LEVEL_REFERENCE = 0.3
 
 
 class MicrophoneError(Exception):
@@ -31,7 +34,7 @@ class Microphone:
     def _chunk_duration(self) -> float:
         return 0.1
 
-    def record_utterance(self) -> np.ndarray:
+    def record_utterance(self, on_level: Optional[Callable[[float], None]] = None) -> np.ndarray:
         try:
             import sounddevice as sd
         except (ImportError, OSError) as exc:
@@ -52,6 +55,8 @@ class Microphone:
                     chunk = chunk.reshape(-1)
                     frames.append(chunk)
                     volume = float(np.sqrt(np.mean(np.square(chunk)))) if len(chunk) else 0.0
+                    if on_level is not None:
+                        on_level(min(1.0, volume / LEVEL_REFERENCE))
 
                     if volume >= SILENCE_THRESHOLD:
                         has_spoken = True

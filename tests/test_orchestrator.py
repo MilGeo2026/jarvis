@@ -59,7 +59,9 @@ def test_simple_text_reply() -> None:
     reply = assistant.handle_text("Hallo Jarvis")
 
     assert reply == "Natuerlich, wie kann ich helfen?"
-    assert state_manager.state == AssistantState.IDLE
+    # Der Endzustand nach einer erfolgreichen Antwort bleibt bewusst THINKING;
+    # der Aufrufer (Voice-Pipeline/GUI) entscheidet ueber SPEAKING/STANDBY.
+    assert state_manager.state == AssistantState.THINKING
 
 
 def test_safe_tool_call_executes_directly() -> None:
@@ -126,7 +128,7 @@ def test_confirming_pending_action_executes_tool() -> None:
     assert dangerous_tool.calls == [{"application": "notepad"}]
     assert assistant.pending_action is None
     assert reply == "Notepad wurde beendet."
-    assert state_manager.state == AssistantState.IDLE
+    assert state_manager.state == AssistantState.THINKING
 
 
 def test_declining_pending_action_cancels_without_executing() -> None:
@@ -149,6 +151,53 @@ def test_declining_pending_action_cancels_without_executing() -> None:
     assert "abgebrochen" in reply.lower()
     # Claude wurde fuer die Ablehnung nicht erneut aufgerufen.
     assert claude.send.call_count == 2
+
+
+def test_declining_pending_action_returns_to_standby() -> None:
+    dangerous_tool = FakeDangerousTool()
+    registry = ToolRegistry()
+    registry.register(dangerous_tool)
+
+    claude = MagicMock()
+    claude.send.side_effect = [
+        response(tool_use_block("1", "close_application", {"application": "notepad"})),
+        response(text_block("Soll ich 'notepad' wirklich beenden?")),
+    ]
+    assistant, state_manager = make_assistant(claude, registry)
+
+    assistant.handle_text("Schliesse Notepad")
+    assistant.handle_text("Nein")
+
+    assert state_manager.state == AssistantState.STANDBY
+
+
+def test_safe_tool_call_passes_through_executing_state() -> None:
+    class EchoTool(Tool):
+        name = "calculator"
+        description = "x"
+        parameters = {"type": "object", "properties": {}, "required": []}
+
+        def execute(self, arguments: dict) -> ToolResult:
+            return ToolResult(success=True, message="Das Ergebnis ist 9.065.")
+
+    registry = ToolRegistry()
+    registry.register(EchoTool())
+
+    claude = MagicMock()
+    claude.send.side_effect = [
+        response(tool_use_block("1", "calculator", {"expression": "245*37"})),
+        response(text_block("Das Ergebnis ist 9.065.")),
+    ]
+    assistant, state_manager = make_assistant(claude, registry)
+
+    seen_states = []
+    state_manager.subscribe(seen_states.append)
+
+    assistant.handle_text("Was ist 245 mal 37?")
+
+    assert AssistantState.EXECUTING in seen_states
+    executing_index = seen_states.index(AssistantState.EXECUTING)
+    assert AssistantState.THINKING in seen_states[executing_index + 1 :]
 
 
 def test_ai_service_error_is_surfaced_and_sets_error_state() -> None:

@@ -6,6 +6,13 @@ from app.config import Settings
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+try:
+    from PySide6.QtWidgets import QApplication
+
+    _qapp = QApplication.instance() or QApplication([])
+except Exception:  # pragma: no cover - Umgebung ohne nutzbares Qt-Backend
+    _qapp = None
+
 
 @pytest.fixture
 def base_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -22,6 +29,12 @@ def base_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("WAKE_WORD_ENABLED", "true")
     monkeypatch.setenv("WAKE_WORD", "jarvis")
     monkeypatch.setenv("LOG_LEVEL", "INFO")
+    monkeypatch.setenv("WINDOW_MODE", "borderless")
+    monkeypatch.setenv("ALWAYS_ON_TOP", "false")
+    monkeypatch.setenv("HOTKEY_TOGGLE", "<ctrl>+<space>")
+    monkeypatch.setenv("SOUND_ENABLED", "true")
+    monkeypatch.setenv("BOOT_SEQUENCE_ENABLED", "true")
+    monkeypatch.setenv("THEME_PATH", "config/theme.json")
 
 
 @pytest.fixture

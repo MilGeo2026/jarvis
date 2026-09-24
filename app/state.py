@@ -6,9 +6,10 @@ from typing import Callable
 
 
 class AssistantState(str, Enum):
-    IDLE = "IDLE"
+    STANDBY = "STANDBY"
     LISTENING = "LISTENING"
     THINKING = "THINKING"
+    EXECUTING = "EXECUTING"
     SPEAKING = "SPEAKING"
     ERROR = "ERROR"
 
@@ -20,7 +21,7 @@ class StateManager:
     """Haelt den aktuellen Zustand und benachrichtigt Listener (z. B. die GUI) bei Aenderung."""
 
     def __init__(self) -> None:
-        self._state = AssistantState.IDLE
+        self._state = AssistantState.STANDBY
         self._listeners: list[StateListener] = []
 
     @property

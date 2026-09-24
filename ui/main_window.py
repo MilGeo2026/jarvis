@@ -1,32 +1,35 @@
-"""Minimalistische JARVIS-Oberflaeche (PySide6)."""
+"""JARVIS-HUD-Fenster: hostet die QML-Oberflaeche und verbindet sie mit dem Assistenten."""
 from __future__ import annotations
 
 import logging
+from pathlib import Path
+from typing import Optional
 
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtWidgets import (
-    QApplication,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QPushButton,
-    QTextEdit,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtQuickWidgets import QQuickWidget
+from PySide6.QtWidgets import QVBoxLayout, QWidget
 
+from app.events import ActivityBus, AudioLevelBus
 from app.orchestrator import Assistant
-from app.state import StateManager
-from ui.styles import STATE_COLORS, STYLESHEET
+from app.state import AssistantState, StateManager
+from ui.bridge import JarvisBridge
+from ui.sound import SoundPlayer
+from ui.window_controller import WindowMode, apply_window_mode, requires_manual_drag
 from voice.pipeline import VoiceComponents, VoicePipeline
 
 logger = logging.getLogger("jarvis.ui")
+
+QML_MAIN = Path(__file__).parent / "qml" / "Main.qml"
+
+# Dauer der Boot-Sequenz in ms, abgestimmt auf die Choreographie in BootSequence.qml.
+BOOT_SEQUENCE_DURATION_MS = 2200
+ERROR_DISPLAY_DURATION_MS = 1500
 
 
 class _AssistantWorker(QThread):
     finished_with_reply = Signal(str)
 
-    def __init__(self, assistant: Assistant, text: str, parent: QWidget | None = None) -> None:
+    def __init__(self, assistant: Assistant, text: str, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._assistant = assistant
         self._text = text
@@ -37,7 +40,7 @@ class _AssistantWorker(QThread):
 
 
 class _VoiceWorker(QThread):
-    def __init__(self, pipeline: VoicePipeline, parent: QWidget | None = None) -> None:
+    def __init__(self, pipeline: VoicePipeline, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._pipeline = pipeline
 
@@ -48,136 +51,136 @@ class _VoiceWorker(QThread):
         self._pipeline.stop()
 
 
-class MainWindow(QWidget):
-    state_changed = Signal(str)
-    user_text_received = Signal(str)
-    assistant_replied = Signal(str)
+class JarvisWindow(QWidget):
+    """Frameloses/normale HUD-Fenster. Die eigentliche Darstellung lebt komplett in QML."""
 
     def __init__(
         self,
         assistant: Assistant,
+        bridge: JarvisBridge,
         state_manager: StateManager,
-        voice_components: VoiceComponents | None = None,
+        activity_bus: ActivityBus,
+        audio_level_bus: AudioLevelBus,
+        sound: SoundPlayer,
+        window_mode: WindowMode,
+        always_on_top: bool = False,
+        voice_components: Optional[VoiceComponents] = None,
+        wake_word_enabled: bool = True,
+        parent: QWidget | None = None,
     ) -> None:
-        super().__init__()
+        super().__init__(parent)
         self._assistant = assistant
+        self._bridge = bridge
         self._state_manager = state_manager
+        self._activity_bus = activity_bus
+        self._audio_level_bus = audio_level_bus
+        self._sound = sound
+        self._window_mode = window_mode
         self._voice_components = voice_components
+        self._wake_word_enabled = wake_word_enabled
         self._voice_pipeline: VoicePipeline | None = None
         self._voice_worker: _VoiceWorker | None = None
         self._assistant_worker: _AssistantWorker | None = None
+        self._drag_position: QPoint | None = None
 
         self.setWindowTitle("JARVIS")
-        self.resize(480, 640)
-        self.setStyleSheet(STYLESHEET)
+        self.resize(1024, 768)
 
-        self._build_ui()
-
-        self.state_changed.connect(self._on_state_changed)
-        self.user_text_received.connect(lambda text: self._append_transcript("Du", text))
-        self.assistant_replied.connect(lambda text: self._append_transcript("JARVIS", text))
-        self._state_manager.subscribe(lambda state: self.state_changed.emit(state.value))
-
-    def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
 
-        title = QLabel("JARVIS")
-        title.setObjectName("title")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title)
+        self._quick_widget = QQuickWidget()
+        self._quick_widget.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
+        self._quick_widget.setClearColor(Qt.GlobalColor.transparent)
+        self._quick_widget.rootContext().setContextProperty("bridge", bridge)
+        self._quick_widget.setSource(QUrl.fromLocalFile(str(QML_MAIN)))
+        for error in self._quick_widget.errors():
+            logger.error("QML-Fehler: %s", error.toString())
+        self._quick_widget.installEventFilter(self)
+        layout.addWidget(self._quick_widget)
 
-        state_row = QHBoxLayout()
-        self._state_dot = QLabel("◉")
-        self._state_label = QLabel("IDLE")
-        self._state_label.setObjectName("stateLabel")
-        state_row.addStretch()
-        state_row.addWidget(self._state_dot)
-        state_row.addWidget(self._state_label)
-        state_row.addStretch()
-        layout.addLayout(state_row)
-        self._apply_state_color("IDLE")
+        bridge.textSubmitted.connect(self._on_text_submitted)
+        state_manager.subscribe(self._on_state_changed_for_sound)
 
-        self._transcript = QTextEdit()
-        self._transcript.setObjectName("transcript")
-        self._transcript.setReadOnly(True)
-        layout.addWidget(self._transcript, 1)
+        apply_window_mode(self, window_mode, always_on_top)
+        self._start_voice_loop_if_enabled()
 
-        input_row = QHBoxLayout()
-        self._input = QLineEdit()
-        self._input.setPlaceholderText("Nachricht an JARVIS ...")
-        self._input.returnPressed.connect(self._on_send_clicked)
-        send_button = QPushButton("Senden")
-        send_button.clicked.connect(self._on_send_clicked)
-        input_row.addWidget(self._input)
-        input_row.addWidget(send_button)
-        layout.addLayout(input_row)
+    # -- Text-Eingabe (sekundaerer Kanal) --
 
-        footer_row = QHBoxLayout()
-        self._mic_button = QPushButton("\U0001F399 Mikrofon")
-        self._mic_button.setCheckable(True)
-        self._mic_button.setEnabled(self._voice_components is not None)
-        self._mic_button.clicked.connect(self._on_mic_toggled)
-        self._voice_label = QLabel("\U0001F50A Stimme")
-        footer_row.addWidget(self._mic_button)
-        footer_row.addStretch()
-        footer_row.addWidget(self._voice_label)
-        layout.addLayout(footer_row)
-
-    def _append_transcript(self, speaker: str, text: str) -> None:
-        self._transcript.append(f"<b>{speaker}:</b> {text}")
-
-    def _on_send_clicked(self) -> None:
-        text = self._input.text().strip()
-        if not text:
-            return
-        self._input.clear()
-        self._append_transcript("Du", text)
+    def _on_text_submitted(self, text: str) -> None:
         self._assistant_worker = _AssistantWorker(self._assistant, text, self)
         self._assistant_worker.finished_with_reply.connect(self._on_assistant_reply)
         self._assistant_worker.start()
 
     def _on_assistant_reply(self, reply: str) -> None:
-        self._append_transcript("JARVIS", reply)
+        self._activity_bus.publish(reply)
+        if self._state_manager.state == AssistantState.ERROR:
+            QTimer.singleShot(ERROR_DISPLAY_DURATION_MS, lambda: self._state_manager.set(AssistantState.STANDBY))
+        else:
+            self._state_manager.set(AssistantState.STANDBY)
 
-    def _handle_voice_text(self, text: str) -> str:
-        """Wird aus dem Voice-Worker-Thread aufgerufen; Signale sorgen fuer thread-sicheres UI-Update."""
-        self.user_text_received.emit(text)
-        reply = self._assistant.handle_text(text)
-        self.assistant_replied.emit(reply)
-        return reply
+    # -- Sprachschleife (primaerer Kanal) --
 
-    def _on_mic_toggled(self, checked: bool) -> None:
-        if self._voice_components is None:
+    def _start_voice_loop_if_enabled(self) -> None:
+        if self._voice_components is None or not self._wake_word_enabled:
             return
-        if checked:
-            self._voice_pipeline = VoicePipeline(
-                microphone=self._voice_components.microphone,
-                stt=self._voice_components.stt,
-                tts=self._voice_components.tts,
-                wake_word=self._voice_components.wake_word,
-                state_manager=self._state_manager,
-                on_user_text=self._handle_voice_text,
-            )
-            self._voice_worker = _VoiceWorker(self._voice_pipeline, self)
-            self._voice_worker.start()
-        elif self._voice_worker is not None:
-            self._voice_worker.request_stop()
+        self._voice_pipeline = VoicePipeline(
+            microphone=self._voice_components.microphone,
+            stt=self._voice_components.stt,
+            tts=self._voice_components.tts,
+            wake_word=self._voice_components.wake_word,
+            state_manager=self._state_manager,
+            on_user_text=self._assistant.handle_text,
+            activity_bus=self._activity_bus,
+            audio_level_bus=self._audio_level_bus,
+            on_wake_detected=self._sound.play_wake,
+        )
+        self._voice_worker = _VoiceWorker(self._voice_pipeline, self)
+        self._voice_worker.start()
 
-    def _apply_state_color(self, state_value: str) -> None:
-        color = STATE_COLORS.get(state_value, "#888888")
-        self._state_dot.setStyleSheet(f"color: {color}; font-size: 20px;")
+    def _on_state_changed_for_sound(self, state: AssistantState) -> None:
+        if state == AssistantState.EXECUTING:
+            self._sound.play_confirm()
 
-    def _on_state_changed(self, state_value: str) -> None:
-        self._state_label.setText(state_value)
-        self._apply_state_color(state_value)
+    # -- Boot-Sequenz --
 
+    def finish_boot_sequence(self, delay_ms: int = BOOT_SEQUENCE_DURATION_MS) -> None:
+        QTimer.singleShot(delay_ms, self._complete_boot)
 
-def run_gui(
-    assistant: Assistant,
-    state_manager: StateManager,
-    voice_components: VoiceComponents | None = None,
-) -> int:
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow(assistant, state_manager, voice_components)
-    window.show()
-    return app.exec()
+    def _complete_boot(self) -> None:
+        self._bridge.hide_boot()
+        self._sound.play_online()
+
+    # -- Fenster-Drag im rahmenlosen Modus --
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self._quick_widget and requires_manual_drag(self._window_mode):
+            if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                self._drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            elif event.type() == QEvent.Type.MouseMove and self._drag_position is not None:
+                if event.buttons() & Qt.MouseButton.LeftButton:
+                    self.move(event.globalPosition().toPoint() - self._drag_position)
+            elif event.type() == QEvent.Type.MouseButtonRelease:
+                self._drag_position = None
+        return super().eventFilter(watched, event)
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape and self.isFullScreen():
+            self.showNormal()
+        else:
+            super().keyPressEvent(event)
+
+    def closeEvent(self, event) -> None:
+        if self._voice_worker is not None:
+            if self._voice_pipeline is not None:
+                self._voice_pipeline.stop()
+            self._voice_worker.wait(2000)
+        super().closeEvent(event)
+
+    def toggle_visibility(self) -> None:
+        if self.isVisible():
+            self.hide()
+        else:
+            self.show()
+            self.raise_()
+            self.activateWindow()
