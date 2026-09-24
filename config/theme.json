@@ -1,0 +1,13 @@
+{
+  "theme": {
+    "primaryColor": "#00BFFF",
+    "secondaryColor": "#0088AA",
+    "errorColor": "#FF4B4B",
+    "backgroundColor": "#04070C",
+    "backgroundOpacity": 0.85,
+    "textColor": "#E4F6FF",
+    "fontFamily": "Consolas",
+    "glow": true,
+    "animations": true
+  }
+}

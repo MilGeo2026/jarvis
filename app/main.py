@@ -8,6 +8,7 @@ import sys
 from ai.claude_client import ClaudeClient
 from ai.conversation import ConversationManager
 from app.config import ConfigError, Settings
+from app.events import ActivityBus, AudioLevelBus
 from app.orchestrator import Assistant
 from app.state import StateManager
 from security.confirmation import SecurityGuard
@@ -21,14 +22,15 @@ def configure_logging(level: str) -> None:
     logging.basicConfig(level=getattr(logging, level, logging.INFO), format="[%(levelname)s] %(message)s")
 
 
-def build_assistant(settings: Settings) -> tuple[Assistant, StateManager]:
+def build_assistant(settings: Settings) -> tuple[Assistant, StateManager, ActivityBus]:
     state_manager = StateManager()
+    activity_bus = ActivityBus()
     tool_registry = build_default_registry()
     claude_client = ClaudeClient(settings, tool_registry)
     conversation = ConversationManager()
     security_guard = SecurityGuard()
-    assistant = Assistant(claude_client, tool_registry, conversation, security_guard, state_manager)
-    return assistant, state_manager
+    assistant = Assistant(claude_client, tool_registry, conversation, security_guard, state_manager, activity_bus)
+    return assistant, state_manager, activity_bus
 
 
 def build_voice_components(settings: Settings) -> VoiceComponents:
@@ -60,15 +62,73 @@ def run_text_mode(assistant: Assistant) -> None:
         print(f"JARVIS: {reply}")
 
 
-def run_gui_mode(assistant: Assistant, state_manager: StateManager, settings: Settings) -> int:
-    from ui.main_window import run_gui
+def run_gui_mode(assistant: Assistant, state_manager: StateManager, activity_bus: ActivityBus, settings: Settings) -> int:
+    from PySide6.QtWidgets import QApplication
+
+    from ui.bridge import JarvisBridge
+    from ui.hotkey import GlobalHotkey
+    from ui.main_window import JarvisWindow
+    from ui.sound import SoundPlayer
+    from ui.system_monitor import SystemMonitor
+    from ui.theme import Theme
+    from ui.window_controller import WindowMode
+
+    audio_level_bus = AudioLevelBus()
+    theme = Theme.load(settings.theme_path)
 
     voice_components: VoiceComponents | None = None
     try:
         voice_components = build_voice_components(settings)
     except Exception:
         logger.warning("Sprachfunktionen konnten nicht initialisiert werden, GUI startet ohne Voice.")
-    return run_gui(assistant, state_manager, voice_components)
+
+    app = QApplication.instance() or QApplication([])
+
+    bridge = JarvisBridge(
+        theme=theme,
+        state_manager=state_manager,
+        activity_bus=activity_bus,
+        audio_level_bus=audio_level_bus,
+        boot_sequence_enabled=settings.boot_sequence_enabled,
+    )
+    bridge.set_boot_status(
+        voice_online=voice_components is not None,
+        ai_online=bool(settings.anthropic_api_key),
+        mic_online=voice_components is not None,
+        tools_online=True,
+    )
+
+    sound = SoundPlayer(enabled=settings.sound_enabled)
+
+    window = JarvisWindow(
+        assistant=assistant,
+        bridge=bridge,
+        state_manager=state_manager,
+        activity_bus=activity_bus,
+        audio_level_bus=audio_level_bus,
+        sound=sound,
+        window_mode=WindowMode(settings.window_mode),
+        always_on_top=settings.always_on_top,
+        voice_components=voice_components,
+        wake_word_enabled=settings.wake_word_enabled,
+    )
+
+    if settings.boot_sequence_enabled:
+        window.finish_boot_sequence()
+    else:
+        sound.play_online()
+
+    monitor = SystemMonitor(bridge)
+    monitor.start()
+
+    hotkey = GlobalHotkey(settings.hotkey_toggle)
+    hotkey.activated.connect(window.toggle_visibility)
+    hotkey.start()
+
+    exit_code = app.exec()
+    hotkey.stop()
+    monitor.stop()
+    return exit_code
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -85,13 +145,13 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(settings.log_level)
     logger.info("JARVIS gestartet")
 
-    assistant, state_manager = build_assistant(settings)
+    assistant, state_manager, activity_bus = build_assistant(settings)
 
     if args.mode == "text":
         run_text_mode(assistant)
         return 0
 
-    return run_gui_mode(assistant, state_manager, settings)
+    return run_gui_mode(assistant, state_manager, activity_bus, settings)
 
 
 if __name__ == "__main__":
