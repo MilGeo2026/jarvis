@@ -53,6 +53,7 @@ class WakeWordDetector:
         except (RecordingTooShortError, SpeechToTextError):
             return False, ""
 
+        logger.debug("Wake-Word-Pruefung, erkannter Text: %r", text)
         lower_text = text.lower()
         index = lower_text.find(self.wake_word)
         if index == -1:
