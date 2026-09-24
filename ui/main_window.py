@@ -90,6 +90,11 @@ class JarvisWindow(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         self._quick_widget = QQuickWidget()
+        # Bridge in den Qt-Objektbaum des Quick-Widgets haengen: so wird sie erst
+        # abgebaut, wenn Qt auch die QML-Szene abbaut (statt bei zufaelligem
+        # Python-GC-Timing) - vermeidet "Cannot read property of null" durch noch
+        # laufende Animationen, die waehrend des Abbaus auf die Bridge zugreifen.
+        bridge.setParent(self._quick_widget)
         self._quick_widget.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
         self._quick_widget.setClearColor(Qt.GlobalColor.transparent)
         self._quick_widget.rootContext().setContextProperty("bridge", bridge)
